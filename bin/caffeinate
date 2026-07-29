@@ -1,0 +1,46 @@
+#!/bin/sh
+# caffeinate shim — Claude Code 등이 띄우는 sleep 방지(assertion)를 토글로 제어한다.
+# 실제 바이너리는 /usr/bin/caffeinate. 모드는 `caf` 명령으로 바꾼다.
+#
+#   on   : 항상 통과 (macOS 기본 동작)
+#   off  : 항상 차단 (즉시 종료 → 잠들 수 있음)
+#   auto : 전원 연결 시 통과, 배터리일 때만 차단  ← 기본값
+#
+# 단, `caffeinate <명령어>` 처럼 감쌀 명령이 있으면 모드와 무관하게 항상 통과한다
+# (안 그러면 그 명령이 실행되지 않으므로).
+
+REAL=/usr/bin/caffeinate
+MODE_FILE="${CAFFEINATE_MODE_FILE:-$HOME/.config/caffeinate-toggle/mode}"
+
+# 감쌀 명령이 인자에 있으면 무조건 실제 caffeinate 실행
+skip=0
+for a in "$@"; do
+	if [ "$skip" -eq 1 ]; then
+		skip=0
+		continue
+	fi
+	case "$a" in
+		-t | -w) skip=1 ;;
+		-*) ;;
+		*) exec "$REAL" "$@" ;;
+	esac
+done
+
+mode=$(cat "$MODE_FILE" 2>/dev/null) || mode=auto
+[ -n "$mode" ] || mode=auto
+
+case "$mode" in
+	on)
+		exec "$REAL" "$@"
+		;;
+	off)
+		exit 0
+		;;
+	*)
+		# auto: AC 전원이면 통과, 배터리면 차단
+		if /usr/bin/pmset -g batt 2>/dev/null | grep -q "AC Power"; then
+			exec "$REAL" "$@"
+		fi
+		exit 0
+		;;
+esac

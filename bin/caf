@@ -1,0 +1,76 @@
+#!/bin/sh
+# caf — caffeinate(잠들기 방지) 모드 토글
+#
+#   caf          현재 상태 보기
+#   caf off      항상 차단 (배터리 절약, 실행 중인 caffeinate도 즉시 종료)
+#   caf on       항상 허용 (macOS 기본 동작)
+#   caf auto     전원 연결 시만 허용, 배터리면 차단
+#   caf toggle   off <-> auto 왕복
+
+MODE_FILE="${CAFFEINATE_MODE_FILE:-$HOME/.config/caffeinate-toggle/mode}"
+
+current() {
+	m=$(cat "$MODE_FILE" 2>/dev/null)
+	[ -n "$m" ] || m=auto
+	printf '%s' "$m"
+}
+
+kill_running() {
+	# shim이 아닌 실제로 떠 있는 caffeinate 프로세스 정리
+	pkill -x caffeinate 2>/dev/null
+	:
+}
+
+set_mode() {
+	mkdir -p "$(dirname "$MODE_FILE")"
+	printf '%s\n' "$1" > "$MODE_FILE"
+	[ "$1" = "on" ] || kill_running
+}
+
+status() {
+	mode=$(current)
+	case "$mode" in
+		on) desc="항상 허용 (macOS 기본)" ;;
+		off) desc="항상 차단 — 배터리 절약" ;;
+		*) desc="전원 연결 시만 허용, 배터리면 차단" ;;
+	esac
+
+	printf 'caffeinate 모드 : %s  (%s)\n' "$mode" "$desc"
+
+	power=$(/usr/bin/pmset -g batt 2>/dev/null | sed -n "s/.*drawing from '\(.*\)'.*/\1/p")
+	batt=$(/usr/bin/pmset -g batt 2>/dev/null | sed -n 's/.*[[:space:]]\([0-9]\{1,3\}%\);.*/\1/p')
+	printf '현재 전원      : %s%s\n' "${power:-?}" "${batt:+  (배터리 $batt)}"
+
+	if [ "$mode" = "auto" ]; then
+		case "$power" in
+			"AC Power") printf '  → 지금은 통과 (전원 연결됨)\n' ;;
+			*) printf '  → 지금은 차단 (배터리 사용 중)\n' ;;
+		esac
+	fi
+
+	running=$(pgrep -x caffeinate 2>/dev/null | wc -l | tr -d ' ')
+	printf '실행 중        : caffeinate %s개\n' "$running"
+
+	printf '\nsleep 방지 중인 프로세스:\n'
+	/usr/bin/pmset -g assertions 2>/dev/null |
+		grep -E 'PreventUserIdleSystemSleep|PreventUserIdleDisplaySleep' |
+		grep 'pid ' |
+		sed 's/^[[:space:]]*/  /'
+}
+
+case "${1:-status}" in
+	on | off | auto) set_mode "$1" && status ;;
+	toggle)
+		if [ "$(current)" = "off" ]; then set_mode auto; else set_mode off; fi
+		status
+		;;
+	status | "") status ;;
+	-h | --help | help)
+		sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+		;;
+	*)
+		printf 'caf: 알 수 없는 옵션 "%s"\n\n' "$1" >&2
+		sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2
+		exit 1
+		;;
+esac

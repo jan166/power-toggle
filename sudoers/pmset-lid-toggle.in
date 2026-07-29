@@ -1,0 +1,4 @@
+# PowerToggle / lid: pmset disablesleep 토글에만 쓰이는 규칙.
+# 아래 두 명령 외에는 어떤 sudo 권한도 열리지 않는다.
+__USER__ ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0
+__USER__ ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1
