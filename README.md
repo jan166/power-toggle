@@ -5,8 +5,8 @@ A macOS menu bar toggle for the setting that keeps your MacBook awake with the l
 The menu follows your system language.
 
 <p>
-  <img width="335" alt="The PowerToggle menu in English" src="docs/menu-en.png">
-  <img width="305" alt="The PowerToggle menu in Korean" src="docs/menu-ko.png">
+  <img width="390" alt="The PowerToggle menu in English" src="docs/menu-en.png">
+  <img width="390" alt="The PowerToggle menu in Korean" src="docs/menu-ko.png">
 </p>
 
 ## Why this exists
