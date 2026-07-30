@@ -1,19 +1,33 @@
 #!/bin/sh
-# lid — 노트북 뚜껑을 닫아도 잠들지 않게 하는 기능(pmset disablesleep) 토글
+# lid: toggle lid-close sleep prevention (pmset disablesleep).
 #
-#   lid          현재 상태 보기
-#   lid off      기능 끔  → 닫으면 잠듦 (배터리 절약, macOS 기본)
-#   lid on       기능 켬  → 닫아도 계속 깨어 있음
-#   lid toggle   on <-> off 왕복
+#   lid          show current state
+#   lid off      sleep on lid close (saves battery, stock macOS)
+#   lid on       stay awake on lid close
+#   lid toggle   flip it
 #
-# root 권한이 필요하다. /etc/sudoers.d/pmset-lid-toggle 규칙이 있으면 비밀번호 없이,
-# 없으면 sudo 비밀번호를 물어본다.
+# Needs root. Instant when /etc/sudoers.d/pmset-lid-toggle is installed,
+# otherwise it prompts for your password.
+#
+# Output language follows the system language (Korean or English).
 
 PMSET=/usr/bin/pmset
 
-# 현재 SleepDisabled 값 → "1" 또는 "0"
+# --- language ---
+# Order: POWERTOGGLE_LANG, the app's pinned setting, the system language, LANG.
+_lang="${POWERTOGGLE_LANG:-}"
+[ -n "$_lang" ] || _lang=$(defaults read com.hyoju.powertoggle language 2> /dev/null)
+[ -n "$_lang" ] || _lang=$(defaults read -g AppleLanguages 2> /dev/null | sed -n '2p' | tr -cd 'a-zA-Z-')
+[ -n "$_lang" ] || _lang=${LANG%%.*}
+case "$_lang" in
+	ko*) KO=1 ;;
+	*) KO=0 ;;
+esac
+t() { if [ "$KO" = 1 ]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+
+# Current SleepDisabled value, "1" or "0"
 current() {
-	v=$("$PMSET" -g 2>/dev/null | awk '/SleepDisabled/ {print $2; found=1} END {if (!found) print 0}')
+	v=$("$PMSET" -g 2> /dev/null | awk '/SleepDisabled/ {print $2; found=1} END {if (!found) print 0}')
 	case "$v" in
 		1) printf '1' ;;
 		*) printf '0' ;;
@@ -21,33 +35,42 @@ current() {
 }
 
 apply() {
-	# 비밀번호 없이 먼저 시도, 안 되면 대화형 sudo로 폴백
-	if sudo -n "$PMSET" -a disablesleep "$1" 2>/dev/null; then
+	# Try passwordless first, fall back to an interactive sudo prompt.
+	if sudo -n "$PMSET" -a disablesleep "$1" 2> /dev/null; then
 		return 0
 	fi
-	printf 'root 권한이 필요합니다 (sudoers 규칙 없음 → 비밀번호 입력).\n' >&2
+	printf '%s\n' "$(t 'root 권한이 필요합니다 (sudoers 규칙 없음).' \
+		'This change needs root (no sudoers rule installed).')" >&2
 	sudo "$PMSET" -a disablesleep "$1"
 }
 
 status() {
 	if [ "$(current)" = "1" ]; then
-		printf '뚜껑 닫힘 방지 : \033[1;33m켜짐\033[0m — 닫아도 안 잠듭니다 (배터리 소모 큼)\n'
+		st=$(t '켜짐' 'ON')
+		note=$(t '닫아도 안 잠듭니다. 배터리 소모 큼' 'stays awake when closed, heavy battery drain')
+		color='1;33'
 	else
-		printf '뚜껑 닫힘 방지 : \033[1;32m꺼짐\033[0m — 닫으면 잠듭니다 (macOS 기본)\n'
+		st=$(t '꺼짐' 'OFF')
+		note=$(t '닫으면 잠듭니다. macOS 기본' 'sleeps when closed, stock macOS')
+		color='1;32'
 	fi
+	printf '%s\033[%sm%s\033[0m  (%s)\n' \
+		"$(t '뚜껑 닫힘 방지        ' 'Lid-close prevention  ')" "$color" "$st" "$note"
 
-	# 참고 지표
-	caf_mode=$(cat "${CAFFEINATE_MODE_FILE:-$HOME/.config/caffeinate-toggle/mode}" 2>/dev/null)
-	[ -n "$caf_mode" ] || caf_mode="on (shim 미설치)"
-	printf 'caffeinate     : %s   (바꾸려면 caf)\n' "$caf_mode"
+	mode=$(cat "${CAFFEINATE_MODE_FILE:-$HOME/.config/caffeinate-toggle/mode}" 2> /dev/null)
+	[ -n "$mode" ] || mode=$(t 'on (shim 미설치)' 'on (shim not installed)')
+	printf '%s%s  (%s)\n' 'caffeinate            ' "$mode" "$(t '바꾸려면 caf' 'change with: caf')"
 
-	dsleep=$("$PMSET" -g 2>/dev/null | awk '/^ displaysleep/ {print $2}')
-	printf '화면 꺼짐      : %s분\n' "${dsleep:-?}"
+	dsleep=$("$PMSET" -g 2> /dev/null | awk '/^ displaysleep/ {print $2}')
+	printf '%s%s\n' "$(t '화면 꺼짐             ' 'Display off           ')" \
+		"$(t "${dsleep:-?}분" "${dsleep:-?} min")"
 
-	power=$("$PMSET" -g batt 2>/dev/null | sed -n "s/.*drawing from '\(.*\)'.*/\1/p")
-	batt=$("$PMSET" -g batt 2>/dev/null | sed -n 's/.*[[:space:]]\([0-9]\{1,3\}%\);.*/\1/p')
-	printf '현재 전원      : %s%s\n' "${power:-?}" "${batt:+  ($batt)}"
+	power=$("$PMSET" -g batt 2> /dev/null | sed -n "s/.*drawing from '\(.*\)'.*/\1/p")
+	batt=$("$PMSET" -g batt 2> /dev/null | sed -n 's/.*[[:space:]]\([0-9]\{1,3\}%\);.*/\1/p')
+	printf '%s%s%s\n' "$(t '전원                  ' 'Power                 ')" "${power:-?}" "${batt:+  ($batt)}"
 }
+
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-status}" in
 	off | 0 | sleep) apply 0 && status ;;
@@ -56,10 +79,10 @@ case "${1:-status}" in
 		if [ "$(current)" = "1" ]; then apply 0; else apply 1; fi && status
 		;;
 	status | "") status ;;
-	-h | --help | help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
+	-h | --help | help) usage ;;
 	*)
-		printf 'lid: 알 수 없는 옵션 "%s"\n\n' "$1" >&2
-		sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' >&2
+		printf 'lid: %s "%s"\n\n' "$(t '알 수 없는 옵션' 'unknown option')" "$1" >&2
+		usage >&2
 		exit 1
 		;;
 esac

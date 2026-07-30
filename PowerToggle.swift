@@ -1,14 +1,34 @@
-// PowerToggle — macOS 메뉴바에서 잠들기 관련 설정을 토글하는 작은 앱.
+// PowerToggle: a small menu bar app for two sleep-related macOS settings.
 //
-//   · 뚜껑 닫아도 안 잠들기 (pmset disablesleep)
-//   · caffeinate 차단 모드   (~/.config/caffeinate-toggle/mode, caffeinate shim과 공유)
+//   - Lid-close sleep prevention (pmset disablesleep)
+//   - A caffeinate blocking mode (~/.config/caffeinate-toggle/mode, shared with the shim)
 //
-// 권한이 필요한 pmset 변경은 sudoers NOPASSWD 규칙이 있으면 즉시 실행하고,
-// 없으면 macOS 표준 관리자 인증창으로 폴백한다.
+// Changing pmset needs root. If the sudoers NOPASSWD rule is installed it applies
+// instantly, otherwise it falls back to the standard macOS authentication dialog.
+//
+// The UI follows the system language: Korean when the preferred language is Korean,
+// English otherwise. Test the English strings with:
+//   ~/Applications/PowerToggle.app/Contents/MacOS/PowerToggle -AppleLanguages '(en)'
 
 import Cocoa
 
-// MARK: - 셸 실행
+// MARK: - Localization
+
+/// Follows the system language, unless pinned explicitly:
+///   defaults write com.hyoju.powertoggle language -string ko
+///   defaults write com.hyoju.powertoggle language -string en
+let isKorean: Bool = {
+	if let forced = UserDefaults.standard.string(forKey: "language")?.lowercased() {
+		if forced.hasPrefix("ko") { return true }
+		if forced.hasPrefix("en") { return false }
+	}
+	return (Locale.preferredLanguages.first ?? "en").hasPrefix("ko")
+}()
+
+/// Picks the Korean or English string for the current system language.
+func t(_ ko: String, _ en: String) -> String { isKorean ? ko : en }
+
+// MARK: - Running commands
 
 @discardableResult
 func shell(_ path: String, _ args: [String]) -> (status: Int32, out: String) {
@@ -24,7 +44,8 @@ func shell(_ path: String, _ args: [String]) -> (status: Int32, out: String) {
 	return (task.terminationStatus, String(data: data, encoding: .utf8) ?? "")
 }
 
-/// root 권한 실행. 1) sudo -n (sudoers 규칙 있으면 즉시) 2) 관리자 인증창 폴백
+/// Runs a command as root. Tries sudo -n first (instant with the sudoers rule),
+/// then falls back to the macOS administrator authentication dialog.
 func runElevated(_ argv: [String]) -> Bool {
 	if shell("/usr/bin/sudo", ["-n"] + argv).status == 0 { return true }
 	let joined = argv.map { "'\($0)'" }.joined(separator: " ")
@@ -32,7 +53,7 @@ func runElevated(_ argv: [String]) -> Bool {
 	return shell("/usr/bin/osascript", ["-e", script]).status == 0
 }
 
-// MARK: - 상태 읽기
+// MARK: - Reading state
 
 let sudoersRulePath = "/etc/sudoers.d/pmset-lid-toggle"
 let sudoersSourcePath = NSHomeDirectory() + "/.config/caffeinate-toggle/pmset-lid-toggle.sudoers"
@@ -40,8 +61,8 @@ let caffeinateModePath = NSHomeDirectory() + "/.config/caffeinate-toggle/mode"
 let caffeinateShimPath = NSHomeDirectory() + "/.local/bin/caffeinate"
 
 struct PowerState {
-	var lidPrevention = false      // 뚜껑 닫아도 안 잠듦
-	var displaySleep = "?"         // 화면 꺼지는 시간(분)
+	var lidPrevention = false      // stays awake with the lid closed
+	var displaySleep = "?"         // minutes until the display turns off
 	var powerSource = "?"
 	var batteryPercent = ""
 	var caffeinateMode = "on"
@@ -87,16 +108,22 @@ struct PowerState {
 
 	var onBattery: Bool { !powerSource.contains("AC") }
 
-	/// 지금 실제로 잠들 수 있는 상태인지 한 줄 요약
+	/// One line saying whether the machine can actually sleep right now.
 	var verdict: String {
-		if lidPrevention { return "닫아도 안 잠듦 — 배터리 소모 큼" }
+		if lidPrevention {
+			return t("닫아도 안 잠듦. 배터리 소모 큼",
+			         "Stays awake with the lid closed. Heavy battery drain")
+		}
 		let blocked = caffeinateMode == "off" || (caffeinateMode == "auto" && onBattery)
-		if !blocked && caffeinateRunning > 0 { return "닫으면 잠듦 (지금 caffeinate가 유휴 잠들기 방지 중)" }
-		return "닫으면 잠듦 — 배터리 절약 중"
+		if !blocked && caffeinateRunning > 0 {
+			return t("닫으면 잠듦 (caffeinate가 유휴 잠들기를 막고 있음)",
+			         "Sleeps on lid close (caffeinate is blocking idle sleep)")
+		}
+		return t("닫으면 잠듦. 배터리 절약 중", "Sleeps on lid close. Saving battery")
 	}
 }
 
-// MARK: - 앱
+// MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	private var statusItem: NSStatusItem!
@@ -107,9 +134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		NSApp.setActivationPolicy(.accessory)
 
 		statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-		// autosaveName이 있어야 위치가 저장/복원된다. 없으면 macOS가 노치 경계에 배치해
-		// 항목이 가려질 수 있다. 희망 x좌표는 아래 키로 지정한다:
-		//   defaults write com.hyoju.powertoggle "NSStatusItem Preferred Position PowerToggle" -int 1500
+		// autosaveName is what makes the position persist. Without it macOS can park
+		// the item on the notch boundary where it gets clipped. Command-drag is the
+		// only reliable way to move it; writing the preferred-position key is ignored.
 		statusItem.autosaveName = "PowerToggle"
 		let menu = NSMenu()
 		menu.delegate = self
@@ -120,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			self?.refresh()
 		}
 
-		// 메뉴바에 자리가 없어 항목이 노치 뒤/화면 밖으로 밀렸는지 진단해 남긴다.
+		// Record where the status item landed, so a missing icon can be diagnosed.
 		DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
 			guard let window = self.statusItem.button?.window else { return }
 			let visible = window.occlusionState == .visible
@@ -129,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 				"img=\(self.statusItem.button?.image != nil)"
 			try? info.write(toFile: "/tmp/pt-diag.log", atomically: true, encoding: .utf8)
 			if !visible {
-				NSLog("PowerToggle: 상태 항목이 보이지 않습니다 (%@)", info)
+				NSLog("PowerToggle: status item is not visible (%@)", info)
 			}
 		}
 	}
@@ -138,38 +165,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		state = .read()
 		guard let button = statusItem.button else { return }
 		let symbol = state.lidPrevention ? "bolt.fill" : "moon.zzz.fill"
-		let label = state.lidPrevention ? "잠들기 방지 켜짐" : "잠들기 허용"
+		let label = state.lidPrevention
+			? t("잠들기 방지 켜짐", "Sleep prevention on")
+			: t("잠들기 허용", "Sleep allowed")
 		let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
 		image?.isTemplate = true
 		button.image = image
-		// 아이콘이 없으면(심볼 로드 실패) 항목이 0폭이 되어 아예 안 보이므로 텍스트로 대체
+		// With no image the item would be zero width and invisible, so fall back to text.
 		button.title = (image == nil) ? (state.lidPrevention ? "⚡︎" : "☾") : ""
 		button.imagePosition = image == nil ? .noImage : .imageOnly
-		button.toolTip = "PowerToggle — \(state.verdict)"
+		button.toolTip = "PowerToggle: \(state.verdict)"
 	}
 
-	// MARK: 메뉴 구성
+	// MARK: Menu
 
 	func menuNeedsUpdate(_ menu: NSMenu) {
 		state = .read()
 		menu.removeAllItems()
 
-		addInfo(menu, "지금: \(state.verdict)")
+		addInfo(menu, t("지금: \(state.verdict)", "Now: \(state.verdict)"))
 		menu.addItem(.separator())
 
-		let lid = NSMenuItem(title: "뚜껑 닫아도 안 잠들기",
+		let lid = NSMenuItem(title: t("뚜껑 닫아도 안 잠들기", "Stay awake with lid closed"),
 		                     action: #selector(toggleLid), keyEquivalent: "")
 		lid.target = self
 		lid.state = state.lidPrevention ? .on : .off
 		menu.addItem(lid)
 
-		// caffeinate 하위 메뉴
-		let cafItem = NSMenuItem(title: "caffeinate (작업 중 유휴 잠들기 방지)",
+		let cafItem = NSMenuItem(title: t("caffeinate (작업 중 유휴 잠들기 방지)",
+		                                  "caffeinate (blocks idle sleep during work)"),
 		                         action: nil, keyEquivalent: "")
 		let cafMenu = NSMenu()
-		for (mode, title) in [("on", "항상 허용 (macOS 기본)"),
-		                      ("auto", "전원 연결 시만 허용"),
-		                      ("off", "항상 차단")] {
+		let modes = [("on", t("항상 허용 (macOS 기본)", "Always allow (stock macOS)")),
+		             ("auto", t("전원 연결 시만 허용", "Allow on AC power only")),
+		             ("off", t("항상 차단", "Always block"))]
+		for (mode, title) in modes {
 			let item = NSMenuItem(title: title, action: #selector(setCaffeinate(_:)), keyEquivalent: "")
 			item.target = self
 			item.representedObject = mode
@@ -178,30 +208,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		}
 		if !state.shimInstalled {
 			cafMenu.addItem(.separator())
-			addInfo(cafMenu, "shim 미설치 — ~/.local/bin/caffeinate 필요")
+			addInfo(cafMenu, t("shim 미설치. ~/.local/bin/caffeinate 필요",
+			                   "Shim not installed. Needs ~/.local/bin/caffeinate"))
 		}
 		cafItem.submenu = cafMenu
 		menu.addItem(cafItem)
 
 		menu.addItem(.separator())
-		addInfo(menu, "화면 꺼짐   \(state.displaySleep)분")
-		addInfo(menu, "전원        \(state.powerSource)\(state.batteryPercent.isEmpty ? "" : "  (\(state.batteryPercent))")")
-		addInfo(menu, "caffeinate  \(state.caffeinateRunning)개 실행 중")
+		addInfo(menu, t("화면 꺼짐   \(state.displaySleep)분",
+		                "Display off   \(state.displaySleep) min"))
+		let power = state.powerSource + (state.batteryPercent.isEmpty ? "" : "  (\(state.batteryPercent))")
+		addInfo(menu, t("전원        \(power)", "Power         \(power)"))
+		addInfo(menu, t("caffeinate  \(state.caffeinateRunning)개 실행 중",
+		                "caffeinate  \(state.caffeinateRunning) running"))
 
 		menu.addItem(.separator())
 		if !state.sudoersInstalled && FileManager.default.fileExists(atPath: sudoersSourcePath) {
-			let item = NSMenuItem(title: "비밀번호 없이 토글하기 설정…",
+			let item = NSMenuItem(title: t("비밀번호 없이 토글하기 설정…",
+			                               "Set up passwordless toggling…"),
 			                      action: #selector(installSudoers), keyEquivalent: "")
 			item.target = self
 			menu.addItem(item)
 		}
-		let login = NSMenuItem(title: "로그인 시 자동 실행",
+		let login = NSMenuItem(title: t("로그인 시 자동 실행", "Launch at login"),
 		                       action: #selector(toggleLoginItem), keyEquivalent: "")
 		login.target = self
 		login.state = LoginItem.isEnabled ? .on : .off
 		menu.addItem(login)
 
-		let quit = NSMenuItem(title: "PowerToggle 종료", action: #selector(quit), keyEquivalent: "q")
+		let quit = NSMenuItem(title: t("PowerToggle 종료", "Quit PowerToggle"),
+		                      action: #selector(quit), keyEquivalent: "q")
 		quit.target = self
 		menu.addItem(quit)
 	}
@@ -216,15 +252,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		menu.addItem(item)
 	}
 
-	// MARK: 동작
+	// MARK: Actions
 
 	@objc private func toggleLid() {
 		let next = state.lidPrevention ? "0" : "1"
 		if runElevated(["/usr/bin/pmset", "-a", "disablesleep", next]) {
 			refresh()
 		} else {
-			alert("설정을 바꾸지 못했습니다",
-			      "관리자 인증이 취소되었거나 실패했습니다. 터미널에서 다음을 실행해도 됩니다:\n\nsudo pmset -a disablesleep \(next)")
+			alert(t("설정을 바꾸지 못했습니다", "Could not change the setting"),
+			      t("관리자 인증이 취소되었거나 실패했습니다. 터미널에서 직접 실행해도 됩니다:\n\nsudo pmset -a disablesleep \(next)",
+			        "Authentication was cancelled or failed. You can run this yourself:\n\nsudo pmset -a disablesleep \(next)"))
 		}
 	}
 
@@ -235,7 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		do {
 			try (mode + "\n").write(toFile: caffeinateModePath, atomically: true, encoding: .utf8)
 		} catch {
-			alert("모드를 저장하지 못했습니다", error.localizedDescription)
+			alert(t("모드를 저장하지 못했습니다", "Could not save the mode"), error.localizedDescription)
 			return
 		}
 		if mode != "on" { shell("/usr/bin/pkill", ["-x", "caffeinate"]) }
@@ -246,9 +283,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		let ok = runElevated(["/usr/bin/install", "-o", "root", "-g", "wheel", "-m", "440",
 		                      sudoersSourcePath, sudoersRulePath])
 		if ok {
-			alert("설정 완료", "이제 뚜껑 닫힘 방지 토글이 비밀번호 없이 바로 적용됩니다.\n\n되돌리려면: sudo rm \(sudoersRulePath)")
+			alert(t("설정 완료", "Done"),
+			      t("이제 뚜껑 닫힘 방지 토글이 비밀번호 없이 바로 적용됩니다.\n\n되돌리려면: sudo rm \(sudoersRulePath)",
+			        "Lid-close toggling now applies without a password.\n\nTo undo: sudo rm \(sudoersRulePath)"))
 		} else {
-			alert("설치하지 못했습니다", "관리자 인증이 취소되었거나 실패했습니다.")
+			alert(t("설치하지 못했습니다", "Install failed"),
+			      t("관리자 인증이 취소되었거나 실패했습니다.",
+			        "Authentication was cancelled or failed."))
 		}
 		refresh()
 	}
@@ -264,13 +305,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		a.messageText = title
 		a.informativeText = text
 		a.alertStyle = .informational
-		a.addButton(withTitle: "확인")
+		a.addButton(withTitle: t("확인", "OK"))
 		NSApp.activate(ignoringOtherApps: true)
 		a.runModal()
 	}
 }
 
-// MARK: - 로그인 항목 (LaunchAgent)
+// MARK: - Login item (LaunchAgent)
 
 enum LoginItem {
 	static let label = "com.hyoju.powertoggle"
@@ -309,7 +350,7 @@ enum LoginItem {
 	}
 }
 
-// MARK: - 진입점
+// MARK: - Entry point
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

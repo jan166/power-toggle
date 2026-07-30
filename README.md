@@ -2,7 +2,12 @@
 
 A macOS menu bar toggle for the setting that keeps your MacBook awake with the lid closed.
 
-<img width="360" alt="The PowerToggle menu" src="docs/menu.png">
+The menu follows your system language.
+
+<p>
+  <img width="335" alt="The PowerToggle menu in English" src="docs/menu-en.png">
+  <img width="305" alt="The PowerToggle menu in Korean" src="docs/menu-ko.png">
+</p>
 
 ## Why this exists
 
@@ -44,7 +49,7 @@ The install script never uses root.
 
 ### Toggling without a password
 
-Changing `pmset disablesleep` needs root, so right after install every toggle brings up the macOS authentication dialog. Click **비밀번호 없이 토글하기 설정...** (the "set up passwordless toggling" item) once and it installs a sudoers rule. After that the toggle applies instantly.
+Changing `pmset disablesleep` needs root, so right after install every toggle brings up the macOS authentication dialog. Click **Set up passwordless toggling** in the menu once and it installs a sudoers rule. After that the toggle applies instantly, and the menu item disappears since it has nothing left to do.
 
 The rule is these two lines and nothing else:
 
@@ -130,9 +135,24 @@ sudo rm -f /etc/sudoers.d/pmset-lid-toggle
 
 macOS 15.7.3, 14-inch MacBook Pro (M1 Pro), Xcode 26. `LSMinimumSystemVersion` is set to 12.0, but nothing below 15.7 was verified.
 
-## A note on language
+## Language
 
-The menu and both CLIs print Korean. The code, comments, and this README are in English. If you want an English UI, the strings are in `PowerToggle.swift`, `bin/lid`, and `bin/caf`, and there are not many of them.
+English and Korean, picked from your system language. The app reads `Locale.preferredLanguages`, the CLIs read `AppleLanguages` and fall back to `$LANG`. Anything starting with `ko` gets Korean, everything else gets English.
+
+To pin it instead of following the system:
+
+```sh
+defaults write com.hyoju.powertoggle language -string ko   # or en
+defaults delete com.hyoju.powertoggle language             # back to following the system
+```
+
+The app picks that up on its next launch. Both CLIs read the same key and also honor `POWERTOGGLE_LANG=ko` for a single command, which is handy for checking the other language:
+
+```sh
+POWERTOGGLE_LANG=en lid
+```
+
+Adding a third language means editing the `t(korean, english)` calls, so it is not set up for that. Code and comments are English throughout.
 
 ## 한국어
 
@@ -142,7 +162,9 @@ The menu and both CLIs print Korean. The code, comments, and this README are in 
 
 caffeinate 쪽은 PATH 앞에 shim을 놓아 가로챕니다. 세 모드가 있고 기본값은 `auto` (어댑터를 꽂으면 통과, 배터리면 차단)입니다.
 
-설치는 `./install.sh`. 메뉴바에 아이콘이 안 보이면 위의 "When the icon does not show up" 을 보세요. 노치가 있는 맥북에서는 메뉴바 관리 앱이 숨기고 있는 경우가 대부분입니다.
+설치는 `./install.sh`. 메뉴와 CLI는 시스템 언어를 따라 한국어 또는 영어로 나옵니다. 시스템이 영어인데 한국어로 보고 싶으면 `defaults write com.hyoju.powertoggle language -string ko`.
+
+메뉴바에 아이콘이 안 보이면 위의 "When the icon does not show up" 을 보세요. 노치가 있는 맥북에서는 메뉴바 관리 앱이 숨기고 있는 경우가 대부분입니다.
 
 ## License
 

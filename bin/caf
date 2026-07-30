@@ -1,62 +1,74 @@
 #!/bin/sh
-# caf — caffeinate(잠들기 방지) 모드 토글
+# caf: toggle the caffeinate blocking mode.
 #
-#   caf          현재 상태 보기
-#   caf off      항상 차단 (배터리 절약, 실행 중인 caffeinate도 즉시 종료)
-#   caf on       항상 허용 (macOS 기본 동작)
-#   caf auto     전원 연결 시만 허용, 배터리면 차단
-#   caf toggle   off <-> auto 왕복
+#   caf          show current state
+#   caf off      always block (and kill any running caffeinate)
+#   caf on       always allow (stock macOS behavior)
+#   caf auto     allow on AC power, block on battery
+#   caf toggle   flip between off and auto
+#
+# Reads and writes the same mode file the menu bar app uses.
+# Output language follows the system language (Korean or English).
 
 MODE_FILE="${CAFFEINATE_MODE_FILE:-$HOME/.config/caffeinate-toggle/mode}"
 
+# --- language ---
+# Order: POWERTOGGLE_LANG, the app's pinned setting, the system language, LANG.
+_lang="${POWERTOGGLE_LANG:-}"
+[ -n "$_lang" ] || _lang=$(defaults read com.hyoju.powertoggle language 2> /dev/null)
+[ -n "$_lang" ] || _lang=$(defaults read -g AppleLanguages 2> /dev/null | sed -n '2p' | tr -cd 'a-zA-Z-')
+[ -n "$_lang" ] || _lang=${LANG%%.*}
+case "$_lang" in
+	ko*) KO=1 ;;
+	*) KO=0 ;;
+esac
+t() { if [ "$KO" = 1 ]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+
 current() {
-	m=$(cat "$MODE_FILE" 2>/dev/null)
+	m=$(cat "$MODE_FILE" 2> /dev/null)
 	[ -n "$m" ] || m=auto
 	printf '%s' "$m"
-}
-
-kill_running() {
-	# shim이 아닌 실제로 떠 있는 caffeinate 프로세스 정리
-	pkill -x caffeinate 2>/dev/null
-	:
 }
 
 set_mode() {
 	mkdir -p "$(dirname "$MODE_FILE")"
 	printf '%s\n' "$1" > "$MODE_FILE"
-	[ "$1" = "on" ] || kill_running
+	# Blocking modes also clear anything already holding an assertion.
+	[ "$1" = "on" ] || pkill -x caffeinate 2> /dev/null
+	:
 }
 
 status() {
 	mode=$(current)
 	case "$mode" in
-		on) desc="항상 허용 (macOS 기본)" ;;
-		off) desc="항상 차단 — 배터리 절약" ;;
-		*) desc="전원 연결 시만 허용, 배터리면 차단" ;;
+		on) desc=$(t '항상 허용, macOS 기본' 'always allow, stock macOS') ;;
+		off) desc=$(t '항상 차단, 배터리 절약' 'always block, saves battery') ;;
+		*) desc=$(t '전원 연결 시만 허용' 'allow on AC power only') ;;
 	esac
+	printf '%s%s  (%s)\n' "$(t 'caffeinate 모드       ' 'caffeinate mode       ')" "$mode" "$desc"
 
-	printf 'caffeinate 모드 : %s  (%s)\n' "$mode" "$desc"
-
-	power=$(/usr/bin/pmset -g batt 2>/dev/null | sed -n "s/.*drawing from '\(.*\)'.*/\1/p")
-	batt=$(/usr/bin/pmset -g batt 2>/dev/null | sed -n 's/.*[[:space:]]\([0-9]\{1,3\}%\);.*/\1/p')
-	printf '현재 전원      : %s%s\n' "${power:-?}" "${batt:+  (배터리 $batt)}"
+	power=$(/usr/bin/pmset -g batt 2> /dev/null | sed -n "s/.*drawing from '\(.*\)'.*/\1/p")
+	batt=$(/usr/bin/pmset -g batt 2> /dev/null | sed -n 's/.*[[:space:]]\([0-9]\{1,3\}%\);.*/\1/p')
+	printf '%s%s%s\n' "$(t '전원                  ' 'Power                 ')" "${power:-?}" "${batt:+  ($batt)}"
 
 	if [ "$mode" = "auto" ]; then
 		case "$power" in
-			"AC Power") printf '  → 지금은 통과 (전원 연결됨)\n' ;;
-			*) printf '  → 지금은 차단 (배터리 사용 중)\n' ;;
+			"AC Power") printf '%22s%s\n' '' "$(t '지금은 통과 (전원 연결됨)' 'passing through now (on AC power)')" ;;
+			*) printf '%22s%s\n' '' "$(t '지금은 차단 (배터리 사용 중)' 'blocking now (on battery)')" ;;
 		esac
 	fi
 
-	running=$(pgrep -x caffeinate 2>/dev/null | wc -l | tr -d ' ')
-	printf '실행 중        : caffeinate %s개\n' "$running"
+	running=$(pgrep -x caffeinate 2> /dev/null | wc -l | tr -d ' ')
+	printf '%s%s\n' "$(t '실행 중               ' 'Running               ')" "$(t "caffeinate ${running}개" "caffeinate ${running}")"
 
-	printf '\nsleep 방지 중인 프로세스:\n'
-	/usr/bin/pmset -g assertions 2>/dev/null |
+	printf '\n%s\n' "$(t 'sleep 을 막고 있는 프로세스:' 'Processes blocking sleep:')"
+	/usr/bin/pmset -g assertions 2> /dev/null |
 		grep -E 'PreventUserIdleSystemSleep|PreventUserIdleDisplaySleep' |
 		grep 'pid ' |
 		sed 's/^[[:space:]]*/  /'
 }
+
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-status}" in
 	on | off | auto) set_mode "$1" && status ;;
@@ -65,12 +77,10 @@ case "${1:-status}" in
 		status
 		;;
 	status | "") status ;;
-	-h | --help | help)
-		sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
-		;;
+	-h | --help | help) usage ;;
 	*)
-		printf 'caf: 알 수 없는 옵션 "%s"\n\n' "$1" >&2
-		sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2
+		printf 'caf: %s "%s"\n\n' "$(t '알 수 없는 옵션' 'unknown option')" "$1" >&2
+		usage >&2
 		exit 1
 		;;
 esac
